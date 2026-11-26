@@ -6,8 +6,8 @@ Prices and quantities are integer ticks. Engines do not read the clock and do no
 
 ## Roadmap
 
-1. **Core types and reference engine** (this tree) — the `MatchingEngine` trait and an obviously-correct price-time `ReferenceEngine`.
-2. Fast, cache-friendly engine behind the same trait.
+1. **Core types and reference engine** — the `MatchingEngine` trait and an obviously-correct price-time `ReferenceEngine`.
+2. **Fast, cache-friendly engine** — `FastEngine` behind the same trait.
 3. Differential fuzzing (fast vs. reference) and an invariant checker.
 4. Deterministic order-stream simulator and replayer.
 5. Backtester and trading strategy API, including an arbitrage strategy.
@@ -28,7 +28,20 @@ Matching rules:
 - Cancel removes a resting order. Unknown, already filled, and already canceled ids are reported and do not panic.
 - Zero quantity is rejected and does not consume the order id. An accepted id cannot be reused.
 
+## Phase 2
+
+`FastEngine` in `src/fast.rs` implements the same `MatchingEngine` contract as `ReferenceEngine`.
+
+- Orders live in a slab. Each price level is an intrusive doubly-linked FIFO of slab indices, so a cancel rewrites links and a quantity and does not allocate.
+- An order-id map records a live slab slot, or that the id already filled or left the book. Lookup and cancel are one hash probe. The hasher has fixed keys, so the engine still does not read the OS random source.
+- Each side tracks its best level and links levels from best to worst. Emptying the inside price promotes the next level without a scan. A `BTreeMap` finds a price and its neighbors when a level is created.
+- Slabs reuse slots after fills and cancels. Steady-state matching does not allocate resting-order storage. The engine is safe Rust: links are indices.
+
+`depth`, `best_bid`, `best_ask`, `resting_order`, and `book` follow the same snapshot rules, so a `FastEngine` book compares equal to a `ReferenceEngine` book.
+
 ## Tests
+
+The behavioral suite runs against both engines. Extra cases cover FIFO link edits (head, middle, and tail), level eviction, multi-level sweeps, slab reuse, and fixed-seed streams compared side by side.
 
 ```bash
 cargo test

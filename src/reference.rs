@@ -11,7 +11,7 @@
 
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 
-use crate::engine::MatchingEngine;
+use crate::engine::{price_crosses, MatchingEngine};
 use crate::types::{
     CancelRejectReason, Command, CommandResult, Level, OrderId, Price, Qty, RejectReason,
     RestingOrder, Side, Timestamp, Trade,
@@ -369,15 +369,4 @@ fn sum_remaining(orders: &[RestingOrder]) -> Qty {
             .checked_add(order.remaining_qty)
             .expect("price-level quantity overflowed u64")
     })
-}
-
-/// A market order (`limit == None`) crosses any resting price.
-fn price_crosses(taker_side: Side, limit: Option<Price>, maker_price: Price) -> bool {
-    let Some(limit) = limit else {
-        return true;
-    };
-    match taker_side {
-        Side::Buy => maker_price <= limit,
-        Side::Sell => maker_price >= limit,
-    }
 }
