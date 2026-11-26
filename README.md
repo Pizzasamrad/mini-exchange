@@ -1,6 +1,6 @@
 # mini-exchange
 
-Deterministic miniature stock exchange: an order-book matching engine, a seeded order-flow simulator, and an exact replayer. Later milestones add a backtester.
+Deterministic miniature stock exchange: an order-book matching engine, a seeded order-flow simulator, an exact replayer, and a backtester.
 
 Prices and quantities are integer ticks. Engines do not read the clock and do not use randomness. The same command sequence always produces the same trades and the same book.
 
@@ -10,7 +10,7 @@ Prices and quantities are integer ticks. Engines do not read the clock and do no
 2. **Fast, cache-friendly engine** — `FastEngine` behind the same trait.
 3. **Differential fuzzing and invariant checks** — deterministic workloads compared on `ReferenceEngine` and `FastEngine`, plus a `diff_fuzz` binary.
 4. Deterministic order-stream simulator and replayer.
-5. Backtester and trading strategy API, including an arbitrage strategy.
+5. **Backtester and trading strategy API** — integer-tick portfolio accounting, `ComplementArbStrategy`, and a top-of-book market maker.
 6. Benchmarks (orders/sec, latency percentiles) and a full guide.
 
 ## Phase 1
@@ -90,9 +90,29 @@ cargo run --release --bin replay -- run --input pred.log --engine reference --ve
 
 `orders/sec` on a verified run counts both engines. `--sample-every 0` samples only the final book.
 
+## Phase 5
+
+`src/strategy.rs`, `src/portfolio.rs`, and `src/backtest.rs` replay any event stream while a strategy trades against it.
+
+A `Strategy` sees each market event after the engine applies it: the logical sequence, the market, the command result, the top of book on every active market, and a read-only portfolio snapshot. It returns zero or more `Limit`, `Market`, or `Cancel` actions. Strategy order ids start at `1 << 62`, so they stay out of the simulator's id space and out of an ordinary recorded log. A log that already uses one of those ids is rejected.
+
+The backtester drives `FastEngine` or `ReferenceEngine`. Cash, fees, cost basis, and PnL are integer ticks. A fill updates a FIFO lot queue. Realized PnL is the closing cashflow minus the cost of the lots it consumes. Open inventory is marked to the mid (or to the touch). A long YES share together with a long NO share, or a short pair, is marked at the 100-tick settlement value; only the unmatched remainder uses the book. Equity is cash plus that inventory value. The run tracks peak equity and the worst drawdown in ticks and in basis points.
+
+`ComplementArbStrategy` is the binary-contract strategy. It buys both legs when `ask(YES) + ask(NO) + fees <= 100 - min_edge`, and it can sell the pair when the bids pay `100 + min_edge` after fees. Size is the minimum of the two top-of-book quantities, `max_order_qty`, and the room under `max_position`. Orders are immediate-or-cancel limits at the touch, so a partial clip does not rest. If the legs are already uneven, the next decision buys the smaller leg only when that hedge still locks a non-negative edge, and it will not open a new pair while the imbalance is above `max_unhedged`.
+
+`TopOfBookMarketMaker` is the single-book baseline. It joins the bid and the ask, cancels a quote that has left the touch, and stops quoting a side that would push inventory through `max_position`.
+
+The report's digest is FNV-1a over the fee schedule, every strategy fill, the equity path, and the final portfolio and books. `--verify` requires `FastEngine` and `ReferenceEngine` to produce the same report and the same digest. One tick is one cent in the dollar column.
+
+```bash
+cargo run --release --bin backtest -- --preset prediction-market --orders 100000 --seed 1 --strategy complement-arb --min-edge 1 --max-qty 20 --verify
+cargo run --release --bin backtest -- --preset equity --orders 100000 --seed 1 --strategy market-maker --engine fast
+cargo run --release --bin backtest -- --input pred.log --strategy complement-arb --fee-ticks 1 --verify
+```
+
 ## Tests
 
-The behavioral suite runs against both engines. Extra cases cover FIFO link edits (head, middle, and tail), level eviction, multi-level sweeps, slab reuse, and fixed-seed streams compared side by side. `tests/replay.rs` covers the event-log round trip, line-numbered parse errors, replay determinism, `FastEngine` / `ReferenceEngine` equivalence on both presets, prediction-market tick bounds, and a streamed log.
+The behavioral suite runs against both engines. Extra cases cover FIFO link edits (head, middle, and tail), level eviction, multi-level sweeps, slab reuse, and fixed-seed streams compared side by side. `tests/replay.rs` covers the event-log round trip, line-numbered parse errors, replay determinism, `FastEngine` / `ReferenceEngine` equivalence on both presets, prediction-market tick bounds, and a streamed log. `tests/backtest.rs` covers exact PnL and drawdown, fees, partial fills, YES/NO settlement, complement-arb size limits, determinism, and engine equivalence.
 
 ```bash
 cargo test
