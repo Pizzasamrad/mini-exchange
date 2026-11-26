@@ -1,6 +1,6 @@
 # mini-exchange
 
-Deterministic miniature stock exchange: an order-book matching engine and, in later milestones, a backtesting simulator.
+Deterministic miniature stock exchange: an order-book matching engine, a seeded order-flow simulator, and an exact replayer. Later milestones add a backtester.
 
 Prices and quantities are integer ticks. Engines do not read the clock and do not use randomness. The same command sequence always produces the same trades and the same book.
 
@@ -56,9 +56,43 @@ cargo run --release --bin diff_fuzz -- --orders 500000 --seed 7 --profile tight-
 
 `orders/sec` counts every pass. The default run replays the seed, so that rate includes the determinism check.
 
+## Phase 4
+
+`src/event_log.rs`, `src/sim.rs`, and `src/replay.rs` record an order stream, synthesize one, and play it back.
+
+The log is a small CSV file. Comments start with `#`. The header is required, and `seq` is a strictly increasing logical timestamp:
+
+```text
+# mini-exchange event log v1
+seq,market,cmd,id,side,price,qty
+1,DEFAULT,limit,1,buy,10000,25
+2,YES,market,2,sell,,3
+3,NO,cancel,1,,,
+```
+
+- `market` is a symbol. An empty field means `DEFAULT`, which is what a single-book stream uses. `YES` and `NO` name the two legs of a binary contract.
+- `limit` needs a side, an integer tick price, and a quantity. `market` needs a side and a quantity, and leaves the price empty. `cancel` carries only the order id.
+- `EventReader` and `EventWriter` stream through `BufRead` and `Write`. A bad line returns an error that includes its line number. The reader does not collect the file.
+
+The simulator is a pure function of a preset and a seed. It does not read the operating system's random source. A latent fair value mean-reverts. Liquidity providers post layered bids and asks around it, takers send crossing limits and market orders, and cancels prefer orders that are old or far from the fair value.
+
+- `equity` is one book centered on 10_000 ticks.
+- `prediction-market` is a YES/NO pair. Every price is inside `1..=99`. NO tracks `100 - YES` except during short shocks that open a complement gap.
+
+`replay::run` feeds any `MatchingEngine` from a slice, a `Vec`, or an iterator. `replay::run_reader` streams a file. `ReplayReport` counts commands, limits, market orders, cancels, and rejects, and records trades, share volume, VWAP, the last trade, sampled top-of-book statistics, and the final canonical book of each market. Its digest is FNV-1a over the trade tape and those books, so two runs match when the digests are equal. `replay::verify` replays the same stream through `FastEngine` and `ReferenceEngine` and requires identical results and digests.
+
+```bash
+cargo run --release --bin replay -- generate --preset equity --orders 1000000 --seed 1 --out equity.log
+cargo run --release --bin replay -- generate --preset prediction-market --orders 1000000 --seed 1 --out pred.log
+cargo run --release --bin replay -- run --input equity.log --engine fast
+cargo run --release --bin replay -- run --input pred.log --engine reference --verify
+```
+
+`orders/sec` on a verified run counts both engines. `--sample-every 0` samples only the final book.
+
 ## Tests
 
-The behavioral suite runs against both engines. Extra cases cover FIFO link edits (head, middle, and tail), level eviction, multi-level sweeps, slab reuse, and fixed-seed streams compared side by side.
+The behavioral suite runs against both engines. Extra cases cover FIFO link edits (head, middle, and tail), level eviction, multi-level sweeps, slab reuse, and fixed-seed streams compared side by side. `tests/replay.rs` covers the event-log round trip, line-numbered parse errors, replay determinism, `FastEngine` / `ReferenceEngine` equivalence on both presets, prediction-market tick bounds, and a streamed log.
 
 ```bash
 cargo test
