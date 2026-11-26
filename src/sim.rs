@@ -436,7 +436,7 @@ impl Simulator {
             Side::Buy
         } else if bids > asks && roll < 65 {
             Side::Sell
-        } else if roll % 2 == 0 {
+        } else if roll.is_multiple_of(2) {
             Side::Buy
         } else {
             Side::Sell

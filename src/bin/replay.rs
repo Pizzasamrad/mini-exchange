@@ -283,7 +283,7 @@ fn per_second(count: u64, secs: f64) -> u64 {
 fn grouped(digits: &str) -> String {
     let mut out = String::new();
     for (index, ch) in digits.chars().rev().enumerate() {
-        if index > 0 && index % 3 == 0 {
+        if index > 0 && index.is_multiple_of(3) {
             out.push(',');
         }
         out.push(ch);

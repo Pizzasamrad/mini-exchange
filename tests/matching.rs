@@ -1654,8 +1654,8 @@ fn rapid_level_creation_and_eviction_matches_the_reference() {
     assert_eq!(fast.depth(Side::Buy).len(), 40);
     assert_eq!(fast.depth(Side::Sell).len(), 40);
 
-    for price in (1..=40).rev() {
-        if price % 2 == 0 {
+    for price in (1u64..=40).rev() {
+        if price.is_multiple_of(2) {
             agree(
                 &mut fast,
                 &mut reference,
@@ -1677,8 +1677,8 @@ fn rapid_level_creation_and_eviction_matches_the_reference() {
     assert_eq!(fast.depth(Side::Buy).len(), 20);
     assert_eq!(fast.depth(Side::Sell).len(), 20);
 
-    for price in 1..=40 {
-        if price % 2 == 0 {
+    for price in 1u64..=40 {
+        if price.is_multiple_of(2) {
             agree(
                 &mut fast,
                 &mut reference,

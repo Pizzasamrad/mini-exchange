@@ -210,11 +210,9 @@ impl ReplayReport {
 }
 
 fn vwap_ticks(notional: u128, volume: u128) -> Option<u64> {
-    if volume == 0 {
-        None
-    } else {
-        u64::try_from(notional / volume).ok()
-    }
+    notional
+        .checked_div(volume)
+        .and_then(|ticks| u64::try_from(ticks).ok())
 }
 
 /// Drives one engine per market id.
@@ -326,7 +324,8 @@ where
                 self.digest.observe_trade(&event.market, trade);
             }
         }
-        if self.options.sample_every > 0 && self.commands % self.options.sample_every == 0 {
+        if self.options.sample_every > 0 && self.commands.is_multiple_of(self.options.sample_every)
+        {
             self.sample(&event.market);
         }
         result

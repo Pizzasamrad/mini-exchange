@@ -517,11 +517,9 @@ fn assert_book_stats(actual: &BookStats, expected: BookStats) {
 }
 
 fn vwap(notional: u128, volume: u128) -> Option<u64> {
-    if volume == 0 {
-        None
-    } else {
-        u64::try_from(notional / volume).ok()
-    }
+    notional
+        .checked_div(volume)
+        .and_then(|ticks| u64::try_from(ticks).ok())
 }
 
 fn read_all(text: &str) -> Result<Vec<Event>, ReadError> {
