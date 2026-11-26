@@ -1,8 +1,8 @@
 //! The contract shared by [`crate::ReferenceEngine`] and [`crate::FastEngine`].
 //!
 //! Any two engines that follow this trait must, for the same command sequence,
-//! return equal [`CommandResult`] values and equal [`Book`] snapshots. That is
-//! what later differential tests compare.
+//! return equal [`CommandResult`] values and equal [`Book`] snapshots. The
+//! [`crate::fuzz`] harness is the differential check.
 
 use crate::types::{
     Book, Command, CommandResult, Level, OrderId, Price, Quote, RestingOrder, Side,

@@ -6,13 +6,14 @@
 //!
 //! [`ReferenceEngine`] is the straightforward price-time implementation.
 //! [`FastEngine`] follows the same contract with a slab layout built for
-//! throughput. Later milestones differentially check the two and add a
-//! backtester.
+//! throughput. [`fuzz`] runs the same deterministic command stream through
+//! both and checks book invariants. Later milestones add a backtester.
 
 #![forbid(unsafe_code)]
 
 pub mod engine;
 pub mod fast;
+pub mod fuzz;
 pub mod reference;
 pub mod types;
 
