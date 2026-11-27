@@ -1145,3 +1145,35 @@ fn side_code(side: Side) -> u64 {
         Side::Sell => 2,
     }
 }
+
+/// Steps a backtest one market event at a time.
+///
+/// [`crate::bench`] times [`EventStepper::apply`] on its own pass. The
+/// throughput measurement calls [`run`] and does not read the clock between
+/// events. The same events, strategy, and config produce the same report.
+pub(crate) struct EventStepper<E, S, F> {
+    session: Session<E, S, F>,
+}
+
+impl<E, S, F> EventStepper<E, S, F>
+where
+    E: MatchingEngine,
+    S: Strategy,
+    F: FnMut(&MarketId) -> E,
+{
+    pub(crate) fn new(factory: F, strategy: S, config: BacktestConfig) -> Self {
+        Self {
+            session: Session::new(factory, strategy, config),
+        }
+    }
+
+    /// Apply one market event and the strategy actions it causes.
+    pub(crate) fn apply(&mut self, event: &Event) -> Result<(), BacktestError> {
+        self.session.apply_event(event)
+    }
+
+    /// Close the report. Matches [`run`] for the same inputs.
+    pub(crate) fn finish(self) -> Result<BacktestReport, BacktestError> {
+        self.session.finish()
+    }
+}

@@ -10,11 +10,13 @@
 //! both and checks book invariants. [`sim`] draws a seeded order stream,
 //! [`event_log`] records it, and [`replay`] plays that log back through either
 //! engine. [`backtest`] replays a stream while a [`strategy`] trades, and
-//! accounts for the result in integer ticks.
+//! accounts for the result in integer ticks. [`bench`] measures both engines
+//! on fixed workloads.
 
 #![forbid(unsafe_code)]
 
 pub mod backtest;
+pub mod bench;
 pub mod engine;
 pub mod event_log;
 pub mod fast;
