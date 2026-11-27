@@ -497,7 +497,7 @@ impl Workload {
             self.emit_limit(id, Side::Buy, price, qty);
         }
         for (index, id) in bids.into_iter().enumerate() {
-            if index % 2 == 0 {
+            if index.is_multiple_of(2) {
                 self.cancel_live_id(id);
             }
         }

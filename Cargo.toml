@@ -2,7 +2,7 @@
 name = "mini-exchange"
 version = "0.1.0"
 edition = "2021"
-description = "Deterministic miniature stock exchange and order-book matching engine"
+description = "Deterministic miniature stock exchange: matching engines, order-flow simulation, and replay"
 readme = "README.md"
 
 [dependencies]
