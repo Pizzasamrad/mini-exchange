@@ -1,10 +1,12 @@
-//! The contract shared by the reference engine and later implementations.
+//! The contract shared by [`crate::ReferenceEngine`] and [`crate::FastEngine`].
 //!
 //! Any two engines that follow this trait must, for the same command sequence,
 //! return equal [`CommandResult`] values and equal [`Book`] snapshots. That is
 //! what later differential tests compare.
 
-use crate::types::{Book, Command, CommandResult, Level, OrderId, Quote, RestingOrder, Side};
+use crate::types::{
+    Book, Command, CommandResult, Level, OrderId, Price, Quote, RestingOrder, Side,
+};
 
 /// Price-time limit order book.
 ///
@@ -76,4 +78,19 @@ fn top_quote(levels: &[Level]) -> Option<Quote> {
         price: level.price,
         qty: level.total_qty,
     })
+}
+
+/// Whether `maker_price` can fill an incoming order.
+///
+/// A market order (`limit == None`) crosses every resting price. A buy limit
+/// crosses asks at or below its limit. A sell limit crosses bids at or above
+/// its limit.
+pub(crate) fn price_crosses(taker_side: Side, limit: Option<Price>, maker_price: Price) -> bool {
+    let Some(limit) = limit else {
+        return true;
+    };
+    match taker_side {
+        Side::Buy => maker_price <= limit,
+        Side::Sell => maker_price >= limit,
+    }
 }

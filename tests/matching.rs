@@ -1,5 +1,6 @@
-//! Behavioral tests for [`ReferenceEngine`] through the [`MatchingEngine`] trait.
+//! Behavioral tests for every [`MatchingEngine`].
 //!
+//! The suite runs twice: once on [`ReferenceEngine`] and once on [`FastEngine`].
 //! Every command goes through `drive`, which checks price-time matching against
 //! the previous book, quantity conservation, and the uncrossed-book rule.
 //! Setup commands use `apply`, which runs the same checks and drops the report.
@@ -8,8 +9,8 @@ use std::collections::HashMap;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 
 use mini_exchange::{
-    Book, CancelRejectReason, Command, CommandResult, MatchingEngine, OrderId, Price, Qty,
-    ReferenceEngine, RejectReason, RestingOrder, Side, Timestamp, Trade,
+    Book, CancelRejectReason, Command, CommandResult, FastEngine, MatchingEngine, OrderId, Price,
+    Qty, ReferenceEngine, RejectReason, RestingOrder, Side, Timestamp, Trade,
 };
 
 fn limit(id: u64, side: Side, price: u64, qty: u64, ts: u64) -> Command {
@@ -72,6 +73,23 @@ fn cancel_rejected(id: u64, reason: CancelRejectReason) -> CommandResult {
     }
 }
 
+/// Shared constructor for the engines under test.
+trait Engine: MatchingEngine + Clone + PartialEq + Eq + std::fmt::Debug + 'static {
+    fn fresh_engine() -> Self;
+}
+
+impl Engine for ReferenceEngine {
+    fn fresh_engine() -> Self {
+        Self::new()
+    }
+}
+
+impl Engine for FastEngine {
+    fn fresh_engine() -> Self {
+        Self::new()
+    }
+}
+
 #[derive(Debug, Clone, Default)]
 struct Ledger {
     submitted: HashMap<OrderId, u64>,
@@ -79,12 +97,16 @@ struct Ledger {
     canceled: HashMap<OrderId, u64>,
 }
 
-fn fresh() -> (ReferenceEngine, Ledger) {
-    (ReferenceEngine::new(), Ledger::default())
+fn fresh<E: Engine>() -> (E, Ledger) {
+    (E::fresh_engine(), Ledger::default())
 }
 
 /// Apply `command` and check matching, conservation, and book shape.
-fn drive(engine: &mut ReferenceEngine, ledger: &mut Ledger, command: Command) -> CommandResult {
+fn drive<E: MatchingEngine>(
+    engine: &mut E,
+    ledger: &mut Ledger,
+    command: Command,
+) -> CommandResult {
     let before = engine.book();
     let result = engine.execute(command);
     check_result(&before, engine, command, &result);
@@ -93,7 +115,7 @@ fn drive(engine: &mut ReferenceEngine, ledger: &mut Ledger, command: Command) ->
     result
 }
 
-fn apply(engine: &mut ReferenceEngine, ledger: &mut Ledger, command: Command) {
+fn apply<E: MatchingEngine>(engine: &mut E, ledger: &mut Ledger, command: Command) {
     let _ = drive(engine, ledger, command);
 }
 
@@ -476,9 +498,8 @@ fn sum_remaining(orders: &[RestingOrder]) -> u64 {
     orders.iter().map(|order| order.remaining_qty.get()).sum()
 }
 
-#[test]
-fn empty_book_has_no_quotes() {
-    let engine = ReferenceEngine::new();
+fn empty_book_has_no_quotes<E: Engine>() {
+    let engine = E::fresh_engine();
     assert_eq!(engine.best_bid(), None);
     assert_eq!(engine.best_ask(), None);
     assert!(engine.depth(Side::Buy).is_empty());
@@ -487,9 +508,8 @@ fn empty_book_has_no_quotes() {
     assert!(!engine.book().is_crossed());
 }
 
-#[test]
-fn exact_fill_prints_at_the_resting_ask() {
-    let (mut engine, mut ledger) = fresh();
+fn exact_fill_prints_at_the_resting_ask<E: Engine>() {
+    let (mut engine, mut ledger) = fresh::<E>();
     assert_eq!(
         drive(&mut engine, &mut ledger, limit(1, Side::Sell, 100, 5, 1)),
         accepted(1, vec![], 0, 5, 0)
@@ -502,9 +522,8 @@ fn exact_fill_prints_at_the_resting_ask() {
     assert!(engine.book().asks.is_empty());
 }
 
-#[test]
-fn exact_fill_prints_at_the_resting_bid() {
-    let (mut engine, mut ledger) = fresh();
+fn exact_fill_prints_at_the_resting_bid<E: Engine>() {
+    let (mut engine, mut ledger) = fresh::<E>();
     apply(&mut engine, &mut ledger, limit(1, Side::Buy, 100, 4, 1));
     assert_eq!(
         drive(&mut engine, &mut ledger, limit(2, Side::Sell, 100, 4, 2)),
@@ -514,9 +533,8 @@ fn exact_fill_prints_at_the_resting_bid() {
     assert!(engine.book().asks.is_empty());
 }
 
-#[test]
-fn aggressive_buy_lifts_a_cheaper_ask_at_the_ask_price() {
-    let (mut engine, mut ledger) = fresh();
+fn aggressive_buy_lifts_a_cheaper_ask_at_the_ask_price<E: Engine>() {
+    let (mut engine, mut ledger) = fresh::<E>();
     apply(&mut engine, &mut ledger, limit(1, Side::Sell, 100, 3, 1));
     assert_eq!(
         drive(&mut engine, &mut ledger, limit(2, Side::Buy, 105, 3, 2)),
@@ -524,9 +542,8 @@ fn aggressive_buy_lifts_a_cheaper_ask_at_the_ask_price() {
     );
 }
 
-#[test]
-fn aggressive_sell_hits_a_higher_bid_at_the_bid_price() {
-    let (mut engine, mut ledger) = fresh();
+fn aggressive_sell_hits_a_higher_bid_at_the_bid_price<E: Engine>() {
+    let (mut engine, mut ledger) = fresh::<E>();
     apply(&mut engine, &mut ledger, limit(1, Side::Buy, 105, 3, 1));
     assert_eq!(
         drive(&mut engine, &mut ledger, limit(2, Side::Sell, 99, 3, 2)),
@@ -534,18 +551,16 @@ fn aggressive_sell_hits_a_higher_bid_at_the_bid_price() {
     );
 }
 
-#[test]
-fn equal_prices_cross_instead_of_locking_the_book() {
-    let (mut engine, mut ledger) = fresh();
+fn equal_prices_cross_instead_of_locking_the_book<E: Engine>() {
+    let (mut engine, mut ledger) = fresh::<E>();
     apply(&mut engine, &mut ledger, limit(1, Side::Buy, 50, 2, 1));
     apply(&mut engine, &mut ledger, limit(2, Side::Sell, 50, 2, 2));
     assert!(engine.book().bids.is_empty() && engine.book().asks.is_empty());
     assert!(!engine.book().is_crossed());
 }
 
-#[test]
-fn non_crossing_limits_rest_on_both_sides() {
-    let (mut engine, mut ledger) = fresh();
+fn non_crossing_limits_rest_on_both_sides<E: Engine>() {
+    let (mut engine, mut ledger) = fresh::<E>();
     apply(&mut engine, &mut ledger, limit(1, Side::Buy, 10, 4, 1));
     apply(&mut engine, &mut ledger, limit(2, Side::Sell, 11, 7, 2));
     let book = engine.book();
@@ -556,9 +571,8 @@ fn non_crossing_limits_rest_on_both_sides() {
     assert_eq!(engine.best_ask().unwrap().qty, Qty(7));
 }
 
-#[test]
-fn incoming_limit_rests_the_unmatched_remainder() {
-    let (mut engine, mut ledger) = fresh();
+fn incoming_limit_rests_the_unmatched_remainder<E: Engine>() {
+    let (mut engine, mut ledger) = fresh::<E>();
     apply(&mut engine, &mut ledger, limit(1, Side::Sell, 10, 4, 1));
     assert_eq!(
         drive(&mut engine, &mut ledger, limit(2, Side::Buy, 10, 10, 2)),
@@ -570,9 +584,8 @@ fn incoming_limit_rests_the_unmatched_remainder() {
     assert!(engine.resting_order(OrderId(1)).is_none());
 }
 
-#[test]
-fn maker_keeps_its_original_quantity_after_a_partial_fill() {
-    let (mut engine, mut ledger) = fresh();
+fn maker_keeps_its_original_quantity_after_a_partial_fill<E: Engine>() {
+    let (mut engine, mut ledger) = fresh::<E>();
     apply(&mut engine, &mut ledger, limit(1, Side::Buy, 10, 9, 1));
     apply(&mut engine, &mut ledger, limit(2, Side::Sell, 10, 2, 2));
     let maker = engine.resting_order(OrderId(1)).unwrap();
@@ -581,9 +594,8 @@ fn maker_keeps_its_original_quantity_after_a_partial_fill() {
     assert!(engine.resting_order(OrderId(2)).is_none());
 }
 
-#[test]
-fn sweep_stops_at_the_limit_and_rests_the_remainder() {
-    let (mut engine, mut ledger) = fresh();
+fn sweep_stops_at_the_limit_and_rests_the_remainder<E: Engine>() {
+    let (mut engine, mut ledger) = fresh::<E>();
     apply(&mut engine, &mut ledger, limit(1, Side::Sell, 10, 4, 1));
     apply(&mut engine, &mut ledger, limit(2, Side::Sell, 10, 4, 2));
     apply(&mut engine, &mut ledger, limit(3, Side::Sell, 11, 4, 3));
@@ -614,9 +626,8 @@ fn sweep_stops_at_the_limit_and_rests_the_remainder() {
     assert_eq!(book.asks[1].orders[0].id, OrderId(4));
 }
 
-#[test]
-fn sweep_that_clears_the_book_rests_the_limit_remainder() {
-    let (mut engine, mut ledger) = fresh();
+fn sweep_that_clears_the_book_rests_the_limit_remainder<E: Engine>() {
+    let (mut engine, mut ledger) = fresh::<E>();
     apply(&mut engine, &mut ledger, limit(1, Side::Sell, 10, 2, 1));
     apply(&mut engine, &mut ledger, limit(2, Side::Sell, 11, 2, 2));
     assert_eq!(
@@ -637,9 +648,8 @@ fn sweep_that_clears_the_book_rests_the_limit_remainder() {
     assert_eq!(engine.best_bid().unwrap().qty, Qty(6));
 }
 
-#[test]
-fn sell_sweep_walks_bids_from_high_to_low() {
-    let (mut engine, mut ledger) = fresh();
+fn sell_sweep_walks_bids_from_high_to_low<E: Engine>() {
+    let (mut engine, mut ledger) = fresh::<E>();
     apply(&mut engine, &mut ledger, limit(1, Side::Buy, 10, 1, 1));
     apply(&mut engine, &mut ledger, limit(2, Side::Buy, 12, 1, 2));
     apply(&mut engine, &mut ledger, limit(3, Side::Buy, 11, 1, 3));
@@ -660,9 +670,8 @@ fn sell_sweep_walks_bids_from_high_to_low() {
     assert!(engine.book().bids.is_empty());
 }
 
-#[test]
-fn better_price_matches_before_an_earlier_order() {
-    let (mut engine, mut ledger) = fresh();
+fn better_price_matches_before_an_earlier_order<E: Engine>() {
+    let (mut engine, mut ledger) = fresh::<E>();
     apply(&mut engine, &mut ledger, limit(1, Side::Sell, 100, 5, 1));
     apply(&mut engine, &mut ledger, limit(2, Side::Sell, 99, 5, 2));
     assert_eq!(
@@ -673,9 +682,8 @@ fn better_price_matches_before_an_earlier_order() {
     assert!(engine.resting_order(OrderId(2)).is_none());
 }
 
-#[test]
-fn fifo_ignores_timestamp_values() {
-    let (mut engine, mut ledger) = fresh();
+fn fifo_ignores_timestamp_values<E: Engine>() {
+    let (mut engine, mut ledger) = fresh::<E>();
     // Submitted first, despite the later timestamp.
     apply(&mut engine, &mut ledger, limit(1, Side::Buy, 10, 1, 50));
     apply(&mut engine, &mut ledger, limit(2, Side::Buy, 10, 1, 1));
@@ -686,9 +694,8 @@ fn fifo_ignores_timestamp_values() {
     assert!(engine.resting_order(OrderId(2)).is_some());
 }
 
-#[test]
-fn fifo_partial_fill_reduces_the_front_order_only() {
-    let (mut engine, mut ledger) = fresh();
+fn fifo_partial_fill_reduces_the_front_order_only<E: Engine>() {
+    let (mut engine, mut ledger) = fresh::<E>();
     apply(&mut engine, &mut ledger, limit(1, Side::Sell, 7, 5, 1));
     apply(&mut engine, &mut ledger, limit(2, Side::Sell, 7, 5, 2));
     apply(&mut engine, &mut ledger, limit(3, Side::Sell, 7, 5, 3));
@@ -713,9 +720,8 @@ fn fifo_partial_fill_reduces_the_front_order_only() {
     assert_eq!(level.orders.len(), 1);
 }
 
-#[test]
-fn cancel_in_the_middle_of_a_level_preserves_fifo() {
-    let (mut engine, mut ledger) = fresh();
+fn cancel_in_the_middle_of_a_level_preserves_fifo<E: Engine>() {
+    let (mut engine, mut ledger) = fresh::<E>();
     apply(&mut engine, &mut ledger, limit(1, Side::Buy, 15, 2, 1));
     apply(&mut engine, &mut ledger, limit(2, Side::Buy, 15, 2, 2));
     apply(&mut engine, &mut ledger, limit(3, Side::Buy, 15, 2, 3));
@@ -747,9 +753,8 @@ fn cancel_in_the_middle_of_a_level_preserves_fifo() {
     );
 }
 
-#[test]
-fn depth_is_best_first_and_aggregates_a_level() {
-    let (mut engine, mut ledger) = fresh();
+fn depth_is_best_first_and_aggregates_a_level<E: Engine>() {
+    let (mut engine, mut ledger) = fresh::<E>();
     apply(&mut engine, &mut ledger, limit(1, Side::Buy, 9, 1, 1));
     apply(&mut engine, &mut ledger, limit(2, Side::Buy, 11, 2, 2));
     apply(&mut engine, &mut ledger, limit(3, Side::Buy, 11, 3, 3));
@@ -774,9 +779,8 @@ fn depth_is_best_first_and_aggregates_a_level() {
     assert_eq!(engine.best_ask().unwrap().price, Price(18));
 }
 
-#[test]
-fn market_buy_fills_in_full() {
-    let (mut engine, mut ledger) = fresh();
+fn market_buy_fills_in_full<E: Engine>() {
+    let (mut engine, mut ledger) = fresh::<E>();
     apply(&mut engine, &mut ledger, limit(1, Side::Sell, 5, 2, 1));
     apply(&mut engine, &mut ledger, limit(2, Side::Sell, 6, 2, 2));
     assert_eq!(
@@ -799,9 +803,8 @@ fn market_buy_fills_in_full() {
     assert!(engine.resting_order(OrderId(3)).is_none());
 }
 
-#[test]
-fn market_sell_fills_in_full() {
-    let (mut engine, mut ledger) = fresh();
+fn market_sell_fills_in_full<E: Engine>() {
+    let (mut engine, mut ledger) = fresh::<E>();
     apply(&mut engine, &mut ledger, limit(1, Side::Buy, 8, 4, 1));
     assert_eq!(
         drive(&mut engine, &mut ledger, market(2, Side::Sell, 4, 2)),
@@ -809,9 +812,8 @@ fn market_sell_fills_in_full() {
     );
 }
 
-#[test]
-fn market_buy_discards_the_remainder_when_the_book_runs_dry() {
-    let (mut engine, mut ledger) = fresh();
+fn market_buy_discards_the_remainder_when_the_book_runs_dry<E: Engine>() {
+    let (mut engine, mut ledger) = fresh::<E>();
     apply(&mut engine, &mut ledger, limit(1, Side::Sell, 3, 2, 1));
     apply(&mut engine, &mut ledger, limit(2, Side::Sell, 4, 2, 2));
     assert_eq!(
@@ -832,9 +834,8 @@ fn market_buy_discards_the_remainder_when_the_book_runs_dry() {
     assert!(engine.resting_order(OrderId(3)).is_none());
 }
 
-#[test]
-fn market_on_an_empty_book_cancels_the_whole_quantity() {
-    let (mut engine, mut ledger) = fresh();
+fn market_on_an_empty_book_cancels_the_whole_quantity<E: Engine>() {
+    let (mut engine, mut ledger) = fresh::<E>();
     assert_eq!(
         drive(&mut engine, &mut ledger, market(1, Side::Buy, 8, 1)),
         accepted(1, vec![], 0, 0, 8)
@@ -847,9 +848,8 @@ fn market_on_an_empty_book_cancels_the_whole_quantity() {
     assert!(engine.book().asks.is_empty());
 }
 
-#[test]
-fn market_does_not_trade_through_its_own_id_and_leaves_same_side_liquidity() {
-    let (mut engine, mut ledger) = fresh();
+fn market_does_not_trade_through_its_own_id_and_leaves_same_side_liquidity<E: Engine>() {
+    let (mut engine, mut ledger) = fresh::<E>();
     apply(&mut engine, &mut ledger, limit(1, Side::Buy, 10, 5, 1));
     // A market buy must not match the resting bid, and must not rest.
     assert_eq!(
@@ -859,9 +859,8 @@ fn market_does_not_trade_through_its_own_id_and_leaves_same_side_liquidity() {
     assert_eq!(engine.best_bid().unwrap().qty, Qty(5));
 }
 
-#[test]
-fn cancel_removes_a_resting_order_and_its_level() {
-    let (mut engine, mut ledger) = fresh();
+fn cancel_removes_a_resting_order_and_its_level<E: Engine>() {
+    let (mut engine, mut ledger) = fresh::<E>();
     apply(&mut engine, &mut ledger, limit(1, Side::Buy, 10, 4, 1));
     apply(&mut engine, &mut ledger, limit(2, Side::Buy, 9, 1, 2));
     assert_eq!(drive(&mut engine, &mut ledger, cancel(1)), canceled(1, 4));
@@ -870,9 +869,8 @@ fn cancel_removes_a_resting_order_and_its_level() {
     assert_eq!(engine.depth(Side::Buy).len(), 1);
 }
 
-#[test]
-fn cancel_removes_only_the_remainder_of_a_partial_fill() {
-    let (mut engine, mut ledger) = fresh();
+fn cancel_removes_only_the_remainder_of_a_partial_fill<E: Engine>() {
+    let (mut engine, mut ledger) = fresh::<E>();
     apply(&mut engine, &mut ledger, limit(1, Side::Buy, 10, 10, 1));
     apply(&mut engine, &mut ledger, limit(2, Side::Sell, 10, 4, 2));
     assert_eq!(drive(&mut engine, &mut ledger, cancel(1)), canceled(1, 6));
@@ -883,9 +881,8 @@ fn cancel_removes_only_the_remainder_of_a_partial_fill() {
     );
 }
 
-#[test]
-fn cancel_of_a_filled_order_reports_already_filled() {
-    let (mut engine, mut ledger) = fresh();
+fn cancel_of_a_filled_order_reports_already_filled<E: Engine>() {
+    let (mut engine, mut ledger) = fresh::<E>();
     apply(&mut engine, &mut ledger, limit(1, Side::Buy, 10, 2, 1));
     apply(&mut engine, &mut ledger, limit(2, Side::Sell, 10, 2, 2));
     assert_eq!(
@@ -898,9 +895,8 @@ fn cancel_of_a_filled_order_reports_already_filled() {
     );
 }
 
-#[test]
-fn cancel_of_an_unknown_id_reports_not_found() {
-    let (mut engine, mut ledger) = fresh();
+fn cancel_of_an_unknown_id_reports_not_found<E: Engine>() {
+    let (mut engine, mut ledger) = fresh::<E>();
     apply(&mut engine, &mut ledger, limit(1, Side::Buy, 3, 1, 1));
     assert_eq!(
         drive(&mut engine, &mut ledger, cancel(99)),
@@ -909,9 +905,8 @@ fn cancel_of_an_unknown_id_reports_not_found() {
     assert!(engine.resting_order(OrderId(1)).is_some());
 }
 
-#[test]
-fn cancel_of_a_rejected_id_is_not_found() {
-    let (mut engine, mut ledger) = fresh();
+fn cancel_of_a_rejected_id_is_not_found<E: Engine>() {
+    let (mut engine, mut ledger) = fresh::<E>();
     assert_eq!(
         drive(&mut engine, &mut ledger, limit(5, Side::Buy, 3, 0, 1)),
         rejected(5, RejectReason::ZeroQuantity)
@@ -922,9 +917,8 @@ fn cancel_of_a_rejected_id_is_not_found() {
     );
 }
 
-#[test]
-fn cancel_after_a_partial_market_reports_already_canceled() {
-    let (mut engine, mut ledger) = fresh();
+fn cancel_after_a_partial_market_reports_already_canceled<E: Engine>() {
+    let (mut engine, mut ledger) = fresh::<E>();
     apply(&mut engine, &mut ledger, limit(1, Side::Sell, 4, 2, 1));
     apply(&mut engine, &mut ledger, market(2, Side::Buy, 5, 2));
     assert_eq!(
@@ -933,9 +927,8 @@ fn cancel_after_a_partial_market_reports_already_canceled() {
     );
 }
 
-#[test]
-fn cancel_after_an_empty_market_reports_already_canceled() {
-    let (mut engine, mut ledger) = fresh();
+fn cancel_after_an_empty_market_reports_already_canceled<E: Engine>() {
+    let (mut engine, mut ledger) = fresh::<E>();
     apply(&mut engine, &mut ledger, market(1, Side::Sell, 3, 1));
     assert_eq!(
         drive(&mut engine, &mut ledger, cancel(1)),
@@ -943,9 +936,8 @@ fn cancel_after_an_empty_market_reports_already_canceled() {
     );
 }
 
-#[test]
-fn duplicate_id_is_rejected_and_the_book_is_unchanged() {
-    let (mut engine, mut ledger) = fresh();
+fn duplicate_id_is_rejected_and_the_book_is_unchanged<E: Engine>() {
+    let (mut engine, mut ledger) = fresh::<E>();
     apply(&mut engine, &mut ledger, limit(1, Side::Buy, 10, 2, 1));
     let before = engine.book();
     assert_eq!(
@@ -959,9 +951,8 @@ fn duplicate_id_is_rejected_and_the_book_is_unchanged() {
     );
 }
 
-#[test]
-fn filled_id_cannot_be_reused() {
-    let (mut engine, mut ledger) = fresh();
+fn filled_id_cannot_be_reused<E: Engine>() {
+    let (mut engine, mut ledger) = fresh::<E>();
     apply(&mut engine, &mut ledger, limit(1, Side::Buy, 10, 1, 1));
     apply(&mut engine, &mut ledger, limit(2, Side::Sell, 10, 1, 2));
     assert_eq!(
@@ -970,9 +961,8 @@ fn filled_id_cannot_be_reused() {
     );
 }
 
-#[test]
-fn canceled_id_cannot_be_reused() {
-    let (mut engine, mut ledger) = fresh();
+fn canceled_id_cannot_be_reused<E: Engine>() {
+    let (mut engine, mut ledger) = fresh::<E>();
     apply(&mut engine, &mut ledger, limit(1, Side::Buy, 10, 1, 1));
     apply(&mut engine, &mut ledger, cancel(1));
     assert_eq!(
@@ -981,9 +971,8 @@ fn canceled_id_cannot_be_reused() {
     );
 }
 
-#[test]
-fn zero_quantity_does_not_consume_the_id() {
-    let (mut engine, mut ledger) = fresh();
+fn zero_quantity_does_not_consume_the_id<E: Engine>() {
+    let (mut engine, mut ledger) = fresh::<E>();
     assert_eq!(
         drive(&mut engine, &mut ledger, limit(7, Side::Buy, 10, 0, 1)),
         rejected(7, RejectReason::ZeroQuantity)
@@ -1002,9 +991,8 @@ fn zero_quantity_does_not_consume_the_id() {
     );
 }
 
-#[test]
-fn zero_quantity_is_reported_before_a_duplicate_id() {
-    let (mut engine, mut ledger) = fresh();
+fn zero_quantity_is_reported_before_a_duplicate_id<E: Engine>() {
+    let (mut engine, mut ledger) = fresh::<E>();
     apply(&mut engine, &mut ledger, limit(1, Side::Buy, 4, 1, 1));
     assert_eq!(
         drive(&mut engine, &mut ledger, limit(1, Side::Sell, 4, 0, 2)),
@@ -1017,9 +1005,8 @@ fn zero_quantity_is_reported_before_a_duplicate_id() {
     assert!(engine.resting_order(OrderId(1)).is_some());
 }
 
-#[test]
-fn zero_price_and_zero_timestamp_are_valid() {
-    let (mut engine, mut ledger) = fresh();
+fn zero_price_and_zero_timestamp_are_valid<E: Engine>() {
+    let (mut engine, mut ledger) = fresh::<E>();
     apply(&mut engine, &mut ledger, limit(1, Side::Buy, 0, 1, 0));
     assert_eq!(
         drive(&mut engine, &mut ledger, limit(2, Side::Sell, 0, 1, 0)),
@@ -1027,9 +1014,8 @@ fn zero_price_and_zero_timestamp_are_valid() {
     );
 }
 
-#[test]
-fn quantities_near_u64_max_conserve_shares() {
-    let (mut engine, mut ledger) = fresh();
+fn quantities_near_u64_max_conserve_shares<E: Engine>() {
+    let (mut engine, mut ledger) = fresh::<E>();
     let max = u64::MAX;
     apply(&mut engine, &mut ledger, limit(1, Side::Buy, 10, max, 1));
     assert_eq!(
@@ -1041,7 +1027,7 @@ fn quantities_near_u64_max_conserve_shares() {
         Qty(max - 3)
     );
 
-    let (mut engine, mut ledger) = fresh();
+    let (mut engine, mut ledger) = fresh::<E>();
     apply(&mut engine, &mut ledger, limit(1, Side::Sell, 5, 1, 1));
     assert_eq!(
         drive(&mut engine, &mut ledger, market(2, Side::Buy, max, 2)),
@@ -1051,9 +1037,8 @@ fn quantities_near_u64_max_conserve_shares() {
     assert!(engine.book().bids.is_empty());
 }
 
-#[test]
-fn trait_object_can_hold_the_reference_engine() {
-    let mut engine: Box<dyn MatchingEngine> = Box::new(ReferenceEngine::new());
+fn trait_object_can_hold_the_engine<E: Engine>() {
+    let mut engine: Box<dyn MatchingEngine> = Box::new(E::fresh_engine());
     let _ = engine.execute(limit(1, Side::Sell, 12, 1, 1));
     let result = engine.execute(limit(2, Side::Buy, 12, 1, 2));
     assert_eq!(
@@ -1064,11 +1049,10 @@ fn trait_object_can_hold_the_reference_engine() {
     assert!(engine.best_bid().is_none());
 }
 
-#[test]
-fn identical_sequences_produce_identical_results_and_books() {
+fn identical_sequences_produce_identical_results_and_books<E: Engine>() {
     let commands = sample_sequence();
-    let mut first = ReferenceEngine::new();
-    let mut second = ReferenceEngine::new();
+    let mut first = E::fresh_engine();
+    let mut second = E::fresh_engine();
     let mut first_ledger = Ledger::default();
     let mut second_ledger = Ledger::default();
 
@@ -1081,10 +1065,9 @@ fn identical_sequences_produce_identical_results_and_books() {
     }
 }
 
-#[test]
-fn scripted_session_matches_this_book() {
-    let (mut engine, mut ledger) = fresh();
-    let mut other = ReferenceEngine::new();
+fn scripted_session_matches_this_book<E: Engine>() {
+    let (mut engine, mut ledger) = fresh::<E>();
+    let mut other = E::fresh_engine();
     let mut other_ledger = Ledger::default();
 
     let steps = [
@@ -1177,17 +1160,16 @@ fn sample_sequence() -> Vec<Command> {
     ]
 }
 
-#[test]
-fn random_streams_are_deterministic_and_preserve_invariants() {
+fn random_streams_are_deterministic_and_preserve_invariants<E: Engine>() {
     for seed in [1_u64, 2, 3, 7, 99, 1_000, 0x00C0_FFEE] {
-        run_random_session(seed, 300);
+        run_random_session::<E>(seed, 300);
     }
 }
 
-fn run_random_session(seed: u64, steps: u64) {
+fn run_random_session<E: Engine>(seed: u64, steps: u64) {
     let commands = random_commands(seed, steps);
-    let mut primary = ReferenceEngine::new();
-    let mut replica = ReferenceEngine::new();
+    let mut primary = E::fresh_engine();
+    let mut replica = E::fresh_engine();
     let mut primary_ledger = Ledger::default();
     let mut replica_ledger = Ledger::default();
     let midpoint = (steps / 2) as usize;
@@ -1283,4 +1265,673 @@ impl Lcg {
     fn below(&mut self, exclusive_end: u64) -> u64 {
         self.next() % exclusive_end
     }
+}
+
+macro_rules! instantiate {
+    ($($name:ident),* $(,)?) => {
+        $(
+            mod $name {
+                #[test]
+                fn reference_engine() {
+                    super::$name::<mini_exchange::ReferenceEngine>();
+                }
+
+                #[test]
+                fn fast_engine() {
+                    super::$name::<mini_exchange::FastEngine>();
+                }
+            }
+        )*
+    };
+}
+
+instantiate!(
+    empty_book_has_no_quotes,
+    exact_fill_prints_at_the_resting_ask,
+    exact_fill_prints_at_the_resting_bid,
+    aggressive_buy_lifts_a_cheaper_ask_at_the_ask_price,
+    aggressive_sell_hits_a_higher_bid_at_the_bid_price,
+    equal_prices_cross_instead_of_locking_the_book,
+    non_crossing_limits_rest_on_both_sides,
+    incoming_limit_rests_the_unmatched_remainder,
+    maker_keeps_its_original_quantity_after_a_partial_fill,
+    sweep_stops_at_the_limit_and_rests_the_remainder,
+    sweep_that_clears_the_book_rests_the_limit_remainder,
+    sell_sweep_walks_bids_from_high_to_low,
+    better_price_matches_before_an_earlier_order,
+    fifo_ignores_timestamp_values,
+    fifo_partial_fill_reduces_the_front_order_only,
+    cancel_in_the_middle_of_a_level_preserves_fifo,
+    depth_is_best_first_and_aggregates_a_level,
+    market_buy_fills_in_full,
+    market_sell_fills_in_full,
+    market_buy_discards_the_remainder_when_the_book_runs_dry,
+    market_on_an_empty_book_cancels_the_whole_quantity,
+    market_does_not_trade_through_its_own_id_and_leaves_same_side_liquidity,
+    cancel_removes_a_resting_order_and_its_level,
+    cancel_removes_only_the_remainder_of_a_partial_fill,
+    cancel_of_a_filled_order_reports_already_filled,
+    cancel_of_an_unknown_id_reports_not_found,
+    cancel_of_a_rejected_id_is_not_found,
+    cancel_after_a_partial_market_reports_already_canceled,
+    cancel_after_an_empty_market_reports_already_canceled,
+    duplicate_id_is_rejected_and_the_book_is_unchanged,
+    filled_id_cannot_be_reused,
+    canceled_id_cannot_be_reused,
+    zero_quantity_does_not_consume_the_id,
+    zero_quantity_is_reported_before_a_duplicate_id,
+    zero_price_and_zero_timestamp_are_valid,
+    quantities_near_u64_max_conserve_shares,
+    trait_object_can_hold_the_engine,
+    identical_sequences_produce_identical_results_and_books,
+    scripted_session_matches_this_book,
+    random_streams_are_deterministic_and_preserve_invariants,
+);
+
+/// Run one command on both engines and require equal results and books.
+fn exchange(
+    fast: &mut FastEngine,
+    reference: &mut ReferenceEngine,
+    fast_ledger: &mut Ledger,
+    reference_ledger: &mut Ledger,
+    command: Command,
+) -> CommandResult {
+    let context = format!("{command:?}");
+    let left = step(&context, || drive(fast, fast_ledger, command));
+    let right = step(&context, || drive(reference, reference_ledger, command));
+    assert_eq!(left, right, "{context}");
+    assert_eq!(fast.book(), reference.book(), "{context}");
+    assert_eq!(fast.best_bid(), reference.best_bid(), "{context}");
+    assert_eq!(fast.best_ask(), reference.best_ask(), "{context}");
+    left
+}
+
+fn agree(
+    fast: &mut FastEngine,
+    reference: &mut ReferenceEngine,
+    fast_ledger: &mut Ledger,
+    reference_ledger: &mut Ledger,
+    command: Command,
+) {
+    let _ = exchange(fast, reference, fast_ledger, reference_ledger, command);
+}
+
+fn assert_engines_agree(commands: &[Command], label: &str) {
+    let mut fast = FastEngine::new();
+    let mut reference = ReferenceEngine::new();
+    let mut fast_ledger = Ledger::default();
+    let mut reference_ledger = Ledger::default();
+    for (index, command) in commands.iter().copied().enumerate() {
+        let context = format!("{label} step {index}");
+        let left = step(&context, || drive(&mut fast, &mut fast_ledger, command));
+        let right = step(&context, || {
+            drive(&mut reference, &mut reference_ledger, command)
+        });
+        assert_eq!(left, right, "{context} command {command:?}");
+        assert_eq!(fast.book(), reference.book(), "{context}");
+        assert_eq!(fast.best_bid(), reference.best_bid(), "{context}");
+        assert_eq!(fast.best_ask(), reference.best_ask(), "{context}");
+    }
+}
+
+#[test]
+fn cancel_head_middle_and_tail_keeps_fifo_on_both_engines() {
+    for side in [Side::Buy, Side::Sell] {
+        let mut fast = FastEngine::new();
+        let mut reference = ReferenceEngine::new();
+        let mut fast_ledger = Ledger::default();
+        let mut reference_ledger = Ledger::default();
+        for id in 1..=5 {
+            agree(
+                &mut fast,
+                &mut reference,
+                &mut fast_ledger,
+                &mut reference_ledger,
+                limit(id, side, 40, 10, id),
+            );
+        }
+        agree(
+            &mut fast,
+            &mut reference,
+            &mut fast_ledger,
+            &mut reference_ledger,
+            cancel(1),
+        );
+        agree(
+            &mut fast,
+            &mut reference,
+            &mut fast_ledger,
+            &mut reference_ledger,
+            cancel(5),
+        );
+        agree(
+            &mut fast,
+            &mut reference,
+            &mut fast_ledger,
+            &mut reference_ledger,
+            cancel(3),
+        );
+
+        let book = fast.book();
+        let level = match side {
+            Side::Buy => &book.bids[0],
+            Side::Sell => &book.asks[0],
+        };
+        let ids: Vec<_> = level.orders.iter().map(|order| order.id.get()).collect();
+        assert_eq!(ids, vec![2, 4]);
+        assert_eq!(level.total_qty, Qty(20));
+
+        agree(
+            &mut fast,
+            &mut reference,
+            &mut fast_ledger,
+            &mut reference_ledger,
+            limit(6, side, 40, 10, 6),
+        );
+        let result = exchange(
+            &mut fast,
+            &mut reference,
+            &mut fast_ledger,
+            &mut reference_ledger,
+            limit(7, side.opposite(), 40, 15, 7),
+        );
+        let aggressor = side.opposite();
+        assert_eq!(
+            result,
+            accepted(
+                7,
+                vec![
+                    trade(2, 7, 40, 10, aggressor, 7),
+                    trade(4, 7, 40, 5, aggressor, 7),
+                ],
+                15,
+                0,
+                0,
+            )
+        );
+        assert_eq!(
+            fast.resting_order(OrderId(4)).unwrap().remaining_qty,
+            Qty(5)
+        );
+        assert_eq!(
+            fast.resting_order(OrderId(6)).unwrap().remaining_qty,
+            Qty(10)
+        );
+        assert_eq!(fast.book(), reference.book());
+    }
+}
+
+#[test]
+fn emptying_a_level_updates_best_bid_and_ask() {
+    let mut fast = FastEngine::new();
+    let mut reference = ReferenceEngine::new();
+    let mut fast_ledger = Ledger::default();
+    let mut reference_ledger = Ledger::default();
+
+    agree(
+        &mut fast,
+        &mut reference,
+        &mut fast_ledger,
+        &mut reference_ledger,
+        limit(1, Side::Buy, 30, 2, 1),
+    );
+    agree(
+        &mut fast,
+        &mut reference,
+        &mut fast_ledger,
+        &mut reference_ledger,
+        limit(2, Side::Buy, 30, 3, 2),
+    );
+    agree(
+        &mut fast,
+        &mut reference,
+        &mut fast_ledger,
+        &mut reference_ledger,
+        limit(3, Side::Buy, 20, 5, 3),
+    );
+    agree(
+        &mut fast,
+        &mut reference,
+        &mut fast_ledger,
+        &mut reference_ledger,
+        limit(4, Side::Buy, 10, 4, 4),
+    );
+    agree(
+        &mut fast,
+        &mut reference,
+        &mut fast_ledger,
+        &mut reference_ledger,
+        limit(5, Side::Sell, 40, 2, 5),
+    );
+    agree(
+        &mut fast,
+        &mut reference,
+        &mut fast_ledger,
+        &mut reference_ledger,
+        limit(6, Side::Sell, 40, 2, 6),
+    );
+    agree(
+        &mut fast,
+        &mut reference,
+        &mut fast_ledger,
+        &mut reference_ledger,
+        limit(7, Side::Sell, 50, 6, 7),
+    );
+    assert_eq!(fast.best_bid().unwrap().price, Price(30));
+    assert_eq!(fast.best_bid().unwrap().qty, Qty(5));
+    assert_eq!(fast.best_ask().unwrap().price, Price(40));
+    assert_eq!(fast.best_ask().unwrap().qty, Qty(4));
+
+    agree(
+        &mut fast,
+        &mut reference,
+        &mut fast_ledger,
+        &mut reference_ledger,
+        cancel(1),
+    );
+    assert_eq!(fast.best_bid().unwrap().qty, Qty(3));
+    agree(
+        &mut fast,
+        &mut reference,
+        &mut fast_ledger,
+        &mut reference_ledger,
+        cancel(2),
+    );
+    assert_eq!(fast.best_bid().unwrap().price, Price(20));
+    assert_eq!(fast.best_bid().unwrap().qty, Qty(5));
+    assert_eq!(fast.depth(Side::Buy).len(), 2);
+    agree(
+        &mut fast,
+        &mut reference,
+        &mut fast_ledger,
+        &mut reference_ledger,
+        cancel(3),
+    );
+    assert_eq!(fast.best_bid().unwrap().price, Price(10));
+
+    agree(
+        &mut fast,
+        &mut reference,
+        &mut fast_ledger,
+        &mut reference_ledger,
+        cancel(5),
+    );
+    assert_eq!(fast.best_ask().unwrap().price, Price(40));
+    assert_eq!(fast.best_ask().unwrap().qty, Qty(2));
+    agree(
+        &mut fast,
+        &mut reference,
+        &mut fast_ledger,
+        &mut reference_ledger,
+        cancel(6),
+    );
+    assert_eq!(fast.best_ask().unwrap().price, Price(50));
+    assert_eq!(fast.depth(Side::Sell).len(), 1);
+
+    agree(
+        &mut fast,
+        &mut reference,
+        &mut fast_ledger,
+        &mut reference_ledger,
+        limit(8, Side::Buy, 25, 1, 8),
+    );
+    assert_eq!(fast.best_bid().unwrap().price, Price(25));
+    agree(
+        &mut fast,
+        &mut reference,
+        &mut fast_ledger,
+        &mut reference_ledger,
+        cancel(8),
+    );
+    assert_eq!(fast.best_bid().unwrap().price, Price(10));
+    agree(
+        &mut fast,
+        &mut reference,
+        &mut fast_ledger,
+        &mut reference_ledger,
+        limit(9, Side::Sell, 45, 1, 9),
+    );
+    assert_eq!(fast.best_ask().unwrap().price, Price(45));
+    agree(
+        &mut fast,
+        &mut reference,
+        &mut fast_ledger,
+        &mut reference_ledger,
+        cancel(9),
+    );
+    assert_eq!(fast.best_ask().unwrap().price, Price(50));
+
+    let cleared = exchange(
+        &mut fast,
+        &mut reference,
+        &mut fast_ledger,
+        &mut reference_ledger,
+        market(10, Side::Sell, 10, 10),
+    );
+    assert_eq!(
+        cleared,
+        accepted(10, vec![trade(4, 10, 10, 4, Side::Sell, 10)], 4, 0, 6)
+    );
+    assert!(fast.best_bid().is_none());
+    assert_eq!(fast.best_ask().unwrap().price, Price(50));
+    agree(
+        &mut fast,
+        &mut reference,
+        &mut fast_ledger,
+        &mut reference_ledger,
+        cancel(7),
+    );
+    assert!(fast.best_ask().is_none());
+    assert!(fast.book().bids.is_empty() && fast.book().asks.is_empty());
+    assert_eq!(fast.book(), reference.book());
+}
+
+#[test]
+fn rapid_level_creation_and_eviction_matches_the_reference() {
+    let mut fast = FastEngine::new();
+    let mut reference = ReferenceEngine::new();
+    let mut fast_ledger = Ledger::default();
+    let mut reference_ledger = Ledger::default();
+
+    for price in 1..=40 {
+        agree(
+            &mut fast,
+            &mut reference,
+            &mut fast_ledger,
+            &mut reference_ledger,
+            limit(price, Side::Buy, price, 1, price),
+        );
+        agree(
+            &mut fast,
+            &mut reference,
+            &mut fast_ledger,
+            &mut reference_ledger,
+            limit(1_000 + price, Side::Sell, 1_000 + price, 1, price),
+        );
+    }
+    assert_eq!(fast.best_bid().unwrap().price, Price(40));
+    assert_eq!(fast.best_ask().unwrap().price, Price(1_001));
+    assert_eq!(fast.depth(Side::Buy).len(), 40);
+    assert_eq!(fast.depth(Side::Sell).len(), 40);
+
+    for price in (1..=40).rev() {
+        if price % 2 == 0 {
+            agree(
+                &mut fast,
+                &mut reference,
+                &mut fast_ledger,
+                &mut reference_ledger,
+                cancel(price),
+            );
+            agree(
+                &mut fast,
+                &mut reference,
+                &mut fast_ledger,
+                &mut reference_ledger,
+                cancel(1_000 + price),
+            );
+        }
+    }
+    assert_eq!(fast.best_bid().unwrap().price, Price(39));
+    assert_eq!(fast.best_ask().unwrap().price, Price(1_001));
+    assert_eq!(fast.depth(Side::Buy).len(), 20);
+    assert_eq!(fast.depth(Side::Sell).len(), 20);
+
+    for price in 1..=40 {
+        if price % 2 == 0 {
+            agree(
+                &mut fast,
+                &mut reference,
+                &mut fast_ledger,
+                &mut reference_ledger,
+                limit(2_000 + price, Side::Buy, price, 3, 2_000 + price),
+            );
+            agree(
+                &mut fast,
+                &mut reference,
+                &mut fast_ledger,
+                &mut reference_ledger,
+                limit(3_000 + price, Side::Sell, 1_000 + price, 3, 3_000 + price),
+            );
+        }
+    }
+    assert_eq!(fast.best_bid().unwrap().price, Price(40));
+    assert_eq!(fast.best_bid().unwrap().qty, Qty(3));
+    assert_eq!(fast.best_ask().unwrap().price, Price(1_001));
+    assert_eq!(fast.best_ask().unwrap().qty, Qty(1));
+    assert_eq!(fast.depth(Side::Buy).len(), 40);
+
+    // 40, 39, 38, and 37 hold 3 + 1 + 3 + 1. A sell of 8 clears them.
+    agree(
+        &mut fast,
+        &mut reference,
+        &mut fast_ledger,
+        &mut reference_ledger,
+        limit(9_000, Side::Sell, 1, 8, 9_000),
+    );
+    assert_eq!(fast.best_bid().unwrap().price, Price(36));
+    assert_eq!(fast.best_bid().unwrap().qty, Qty(3));
+    assert_eq!(fast.best_ask().unwrap().price, Price(1_001));
+
+    // 1001..=1004 hold 1 + 3 + 1 + 3. A buy of 8 clears them.
+    agree(
+        &mut fast,
+        &mut reference,
+        &mut fast_ledger,
+        &mut reference_ledger,
+        limit(9_001, Side::Buy, 10_000, 8, 9_001),
+    );
+    assert_eq!(fast.best_ask().unwrap().price, Price(1_005));
+    assert_eq!(fast.best_ask().unwrap().qty, Qty(1));
+    assert_eq!(fast.book(), reference.book());
+}
+
+#[test]
+fn multi_level_sweep_matches_the_reference() {
+    let mut fast = FastEngine::new();
+    let mut reference = ReferenceEngine::new();
+    let mut fast_ledger = Ledger::default();
+    let mut reference_ledger = Ledger::default();
+
+    let mut id = 1u64;
+    for price in 10..30 {
+        for _ in 0..3 {
+            agree(
+                &mut fast,
+                &mut reference,
+                &mut fast_ledger,
+                &mut reference_ledger,
+                limit(id, Side::Sell, price, 2, id),
+            );
+            id += 1;
+        }
+    }
+    let swept = exchange(
+        &mut fast,
+        &mut reference,
+        &mut fast_ledger,
+        &mut reference_ledger,
+        limit(id, Side::Buy, 19, 58, id),
+    );
+    match swept {
+        CommandResult::Accepted {
+            filled_qty,
+            resting_qty,
+            canceled_qty,
+            trades,
+            ..
+        } => {
+            assert_eq!(filled_qty, Qty(58));
+            assert_eq!(resting_qty, Qty::ZERO);
+            assert_eq!(canceled_qty, Qty::ZERO);
+            assert_eq!(trades.len(), 29);
+            assert!(trades.iter().all(|trade| trade.qty == Qty(2)));
+        }
+        other => panic!("expected the sweep to be accepted, got {other:?}"),
+    }
+    assert!(fast.best_bid().is_none());
+    assert_eq!(fast.best_ask().unwrap().price, Price(19));
+    assert_eq!(fast.best_ask().unwrap().qty, Qty(2));
+    assert_eq!(fast.depth(Side::Sell).len(), 11);
+
+    id += 1;
+    let cleared = exchange(
+        &mut fast,
+        &mut reference,
+        &mut fast_ledger,
+        &mut reference_ledger,
+        market(id, Side::Buy, 1_000, id),
+    );
+    match cleared {
+        CommandResult::Accepted {
+            filled_qty,
+            resting_qty,
+            canceled_qty,
+            trades,
+            ..
+        } => {
+            assert_eq!(filled_qty, Qty(62));
+            assert_eq!(resting_qty, Qty::ZERO);
+            assert_eq!(canceled_qty, Qty(938));
+            assert_eq!(trades.len(), 31);
+        }
+        other => panic!("expected the market sweep to be accepted, got {other:?}"),
+    }
+    assert!(fast.book().bids.is_empty() && fast.book().asks.is_empty());
+    assert_eq!(fast.book(), reference.book());
+
+    let mut fast = FastEngine::new();
+    let mut reference = ReferenceEngine::new();
+    let mut fast_ledger = Ledger::default();
+    let mut reference_ledger = Ledger::default();
+    let mut id = 1u64;
+    for price in (10..30).rev() {
+        for _ in 0..3 {
+            agree(
+                &mut fast,
+                &mut reference,
+                &mut fast_ledger,
+                &mut reference_ledger,
+                limit(id, Side::Buy, price, 2, id),
+            );
+            id += 1;
+        }
+    }
+    let swept = exchange(
+        &mut fast,
+        &mut reference,
+        &mut fast_ledger,
+        &mut reference_ledger,
+        limit(id, Side::Sell, 20, 58, id),
+    );
+    match swept {
+        CommandResult::Accepted {
+            filled_qty,
+            resting_qty,
+            canceled_qty,
+            trades,
+            ..
+        } => {
+            assert_eq!(
+                (filled_qty, resting_qty, canceled_qty),
+                (Qty(58), Qty::ZERO, Qty::ZERO)
+            );
+            assert_eq!(trades.len(), 29);
+        }
+        other => panic!("expected the bid sweep to be accepted, got {other:?}"),
+    }
+    assert!(fast.best_ask().is_none());
+    assert_eq!(fast.best_bid().unwrap().price, Price(20));
+    assert_eq!(fast.best_bid().unwrap().qty, Qty(2));
+    assert_eq!(fast.depth(Side::Buy).len(), 11);
+
+    id += 1;
+    let cleared = exchange(
+        &mut fast,
+        &mut reference,
+        &mut fast_ledger,
+        &mut reference_ledger,
+        market(id, Side::Sell, 1_000, id),
+    );
+    match cleared {
+        CommandResult::Accepted {
+            filled_qty,
+            resting_qty,
+            canceled_qty,
+            ..
+        } => {
+            assert_eq!(
+                (filled_qty, resting_qty, canceled_qty),
+                (Qty(62), Qty::ZERO, Qty(938))
+            );
+        }
+        other => panic!("expected the bid market sweep to be accepted, got {other:?}"),
+    }
+    assert!(fast.book().bids.is_empty() && fast.book().asks.is_empty());
+    assert_eq!(fast.book(), reference.book());
+}
+
+#[test]
+fn fast_engine_matches_reference_on_fixed_seed_streams() {
+    assert_engines_agree(&sample_sequence(), "sample");
+    for seed in [1_u64, 2, 3, 7, 99, 1_000, 0x00C0_FFEE] {
+        assert_engines_agree(&random_commands(seed, 300), &format!("phase1 seed {seed}"));
+    }
+    // Wider id and price ranges than the Phase 1 generator, so slabs grow and
+    // reuse slots. Phase 3 can scale this same shape to a million commands.
+    for seed in [1_u64, 7, 99, 0x00C0_FFEE, 42] {
+        assert_engines_agree(&stress_commands(seed, 800), &format!("stress seed {seed}"));
+    }
+}
+
+/// Fixed-seed stream with many distinct ids, overlapping prices, and cancels.
+fn stress_commands(seed: u64, steps: usize) -> Vec<Command> {
+    let mut rng = Lcg::new(seed);
+    let mut next_id = 1u64;
+    let mut issued = Vec::new();
+    let mut commands = Vec::with_capacity(steps);
+    for step in 0..steps {
+        let ts = Timestamp(step as u64);
+        let roll = rng.below(100);
+        if roll < 22 {
+            let id = if issued.is_empty() || rng.below(5) == 0 {
+                rng.below(next_id.saturating_add(4))
+            } else {
+                issued[rng.below(issued.len() as u64) as usize]
+            };
+            commands.push(Command::cancel(OrderId(id)));
+            continue;
+        }
+        let duplicate = !issued.is_empty() && rng.below(30) == 0;
+        let (id, fresh_id) = if duplicate {
+            (issued[rng.below(issued.len() as u64) as usize], false)
+        } else {
+            let id = next_id;
+            next_id += 1;
+            (id, true)
+        };
+        let side = if rng.below(2) == 0 {
+            Side::Buy
+        } else {
+            Side::Sell
+        };
+        let qty = if rng.below(20) == 0 {
+            Qty::ZERO
+        } else {
+            Qty(rng.below(6) + 1)
+        };
+        if fresh_id && !qty.is_zero() {
+            issued.push(id);
+        }
+        if roll < 48 {
+            commands.push(Command::market(OrderId(id), side, qty, ts));
+        } else {
+            let price = match side {
+                Side::Buy => Price(90 + rng.below(20)),
+                Side::Sell => Price(100 + rng.below(20)),
+            };
+            commands.push(Command::limit(OrderId(id), side, price, qty, ts));
+        }
+    }
+    commands
 }
