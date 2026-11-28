@@ -1,0 +1,4 @@
+# Abort-on-panic keeps the wasm demo free of the unwind runtime.
+# Native benches and tests are unchanged: this flag is target-specific.
+[target.wasm32-unknown-unknown]
+rustflags = ["-C", "panic=abort"]

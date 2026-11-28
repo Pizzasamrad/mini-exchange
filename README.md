@@ -1,8 +1,31 @@
 # mini-exchange
 
+**[Live demo](https://pizzasamrad.github.io/mini-exchange/)** — `FastEngine` compiled to WebAssembly, matching orders in the browser.
+
+![Prediction-market books, the trade chart, and complement-arb PnL in the live demo](docs/demo.png)
+
 A deterministic price-time matching engine in safe Rust, checked against a reference oracle, with streaming replay and a prediction-market backtester.
 
 Prices and quantities are integer ticks. The engines do not read a clock and do not draw random numbers, so the same command sequence always produces the same trades, the same book, and the same 64-bit digest. `#![forbid(unsafe_code)]` is crate-wide.
+
+## Try it
+
+Open the [live demo](https://pizzasamrad.github.io/mini-exchange/). Press start and the equity book walks a seeded simulator. Switch the preset to `prediction-market` to put the YES and NO ladders next to each other while `ComplementArbStrategy` marks PnL, paired shares, and drawdown. The stats panel shows the FNV-1a engine digest. Reset to the same seed and the 256-event checkpoint is unchanged. **Replay seed** runs that tape again in the page and compares digests.
+
+A limit order crosses the live book and prints on the tape. Click a level to copy its id, then cancel it. Manual orders join the tape, so the live digest then covers more than the seed alone. The checkpoint row is only the simulator prefix, and it still matches `ReferenceEngine`.
+
+### Build the demo locally
+
+`cargo test` and `cargo clippy` do not need a wasm target. Building the page does. The `wasm-bindgen` CLI has to be 0.2.130, the same version as `crates/mini-exchange-wasm`.
+
+```bash
+rustup target add wasm32-unknown-unknown
+cargo install wasm-bindgen-cli --version 0.2.130 --locked
+./web/build.sh
+python3 web/serve.py
+```
+
+Open `http://127.0.0.1:8080/`. `web/build.sh` compiles `FastEngine` for `wasm32-unknown-unknown` and writes `web/pkg/`, which is gitignored. `web/serve.py` labels `.wasm` as `application/wasm`. GitHub Pages publishes the same files from `.github/workflows/pages.yml`.
 
 ## Architecture
 
@@ -333,8 +356,12 @@ tests/
   differential.rs   profiles, invariants, determinism
   replay.rs         log round trip, both presets, streamed replay
   backtest.rs       PnL, fees, complement arb, engine equivalence
+crates/mini-exchange-wasm/
+  src/lib.rs        wasm-bindgen shell
+  src/session.rs    live book, complement arb, replay digest
+web/                static demo page
 ```
 
 ## Development
 
-CI runs `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, and `cargo test` on stable. The same three commands are the local bar. Release numbers in this file come from `cargo +stable run --release --bin bench` with the default `--ops 200000` and `--seed 1`.
+CI runs `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, and `cargo test` on stable, then the same clippy and test commands for `mini-exchange-wasm` on the host. Those host commands do not install a wasm target. `.github/workflows/pages.yml` is the job that installs `wasm32-unknown-unknown` and publishes the demo. The same three default commands are the local bar. Release numbers in this file come from `cargo +stable run --release --bin bench` with the default `--ops 200000` and `--seed 1`.

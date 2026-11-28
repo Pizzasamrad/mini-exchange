@@ -31,3 +31,9 @@ jobs:
 
       - name: Test
         run: cargo test
+
+      - name: Test the browser session on the host
+        run: cargo test -p mini-exchange-wasm
+
+      - name: Clippy the browser session
+        run: cargo clippy -p mini-exchange-wasm --all-targets -- -D warnings

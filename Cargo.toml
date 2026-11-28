@@ -4,5 +4,14 @@ version = "0.1.0"
 edition = "2021"
 description = "Deterministic miniature stock exchange: matching engines, order-flow simulation, and replay"
 readme = "README.md"
+repository = "https://github.com/Pizzasamrad/mini-exchange"
+license = "MIT"
+keywords = ["matching-engine", "order-book", "exchange", "backtesting", "fuzzing"]
+categories = ["algorithms", "simulation", "wasm"]
 
 [dependencies]
+
+[workspace]
+resolver = "2"
+members = [".", "crates/mini-exchange-wasm"]
+default-members = ["."]
